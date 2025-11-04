@@ -1,0 +1,99 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+log_*.txt
+
+# PDFs de teste (dados sensíveis)
+*.pdf
+*.xml
+
+# Exceção: manter PDFs em fixtures para CI
+!tests/fixtures/**/*.pdf
+!tests/fixtures/**/*.xml
+
+# Excel temporários
+~$*.xlsx
+*.tmp
+
+# Sistema
+Thumbs.db
+desktop.ini
+
+# Pastas específicas do projeto
+Boletos/
+Notas/
+Auditoria/
+Erros/
+Enviados/
+
+# Configurações locais
+config_local.py
+*.env
+.env.local
+
+# Backups
+*.backup
+*.bak
+*_backup_*
+
+# Arquivos temporários Windows
+~$*
+
+# Python Compiled
+*.pyc
+*.pyo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Imagens (menos assinatura)
+*.jpg
+*.png
+!assinatura.jpg

@@ -1,0 +1,38 @@
+=============================================================================
+SISTEMA DE ENVIO DE BOLETOS - JOTA JOTA
+=============================================================================
+
+COMO USAR:
+
+1. Duplo clique em "SistemaBoletosJotaJota.exe"
+2. Selecione o FIDC desejado (CAPITAL, NOVAX, CREDVALE ou SQUID)
+3. Clique em "RENOMEAR BOLETOS"
+4. Clique em "ENVIAR BOLETOS"
+5. Confirme no popup de resumo
+6. Os emails abrirao no Outlook (modo PREVIEW)
+7. Revise e envie manualmente
+
+=============================================================================
+PASTAS DO SISTEMA:
+
+- Boletos/Entrada/     → Coloque os PDFs dos boletos aqui
+- Notas/               → Coloque os XMLs das notas fiscais aqui
+- Boletos/Renomeados/  → Boletos processados (nao mexer)
+- Boletos/Enviados/    → Boletos ja enviados (backup automatico)
+- Auditoria/           → Relatorios de cada execucao
+- Erros/               → Boletos com problema (revisar)
+
+=============================================================================
+IMPORTANTE:
+
+✓ Sistema 100% baseado em XMLs (nao precisa mais de planilha Excel)
+✓ Emails sao extraidos automaticamente dos XMLs
+✓ Modo PREVIEW: emails abrem para revisao antes de enviar
+✓ Relatorios em Auditoria/ registram tudo que foi feito
+
+=============================================================================
+DUVIDAS OU PROBLEMAS:
+
+Contato: joaolucasfurtadofiel17@gmail.com
+
+=============================================================================

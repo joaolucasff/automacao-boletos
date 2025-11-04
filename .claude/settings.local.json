@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\" \"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\debug_305537.py\")",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\" -c \"import sys; sys.path.insert(0, r''C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\_build_server''); from xml_nfe_reader import extrair_dados_nfe; dados = extrair_dados_nfe(r''C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\testenovax.cred.capital.squid\\boletossquid\\3-0305537.xml''); print(f''Valor total XML: {dados[\"\"valor_total\"\"]}''); print(f''Duplicatas:''); [print(f''  {d[\"\"numero\"\"]}: venc={d[\"\"vencimento\"\"]}, valor={d[\"\"valor\"\"]} (tipo: {type(d[\"\"valor\"\"])})'') for d in dados[''duplicatas'']]; dup = dados[''duplicatas''][0]; formatted = f''R$ {dup[\"\"valor\"\"]:,.2f}''.replace('','', ''X'').replace(''.'', '','').replace(''X'', ''.''); print(f''\\nFormatado: {formatted}'')\")",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\":*)",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\" -c \"import re; texto = ''FATURA\\nNÚMERO VENCIMENTO VALOR\\n001 26/09/2025 5.223,09''; pattern = r''FATURA.*?[\\r\\n]+.*?[\\r\\n]+\\s*\\d{3}\\s+\\d{2}/\\d{2}/\\d{4}\\s+([\\d\\.\\,]+)''; match = re.search(pattern, texto, re.IGNORECASE | re.DOTALL); print(''Capturou:'', match.group(1) if match else ''None''); print(''Match completo:'', repr(match.group(0)) if match else ''None'')\")",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\" -c \"import os; from datetime import datetime; arquivos = [''RenomeaçãoBoletos.py'', ''EnvioBoleto.py'', ''xml_nfe_reader.py'', ''InterfaceBoletos.py'']; [print(f''{arq}: {datetime.fromtimestamp(os.path.getmtime(f\"\"C:/Users/User-OEM/Desktop/BoletosAutomação/_build_server/{arq}\"\"))}'') for arq in arquivos]\")",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\pyinstaller.exe\" --clean --onefile --noconsole --name \"SistemaBoletosJotaJota\" InterfaceBoletos.py)",
+      "Bash(timeout /t 30 /nobreak)",
+      "Bash(nul)",
+      "Bash(timeout /t 20 /nobreak)",
+      "Bash(timeout /t 10 /nobreak)",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\" -c \"import os; from datetime import datetime; exe = r''Z:\\EnvioDeBoletosAutomatico\\SistemaBoletosJotaJota.exe''; print(f''Modified: {datetime.fromtimestamp(os.path.getmtime(exe))}''); print(f''Size: {os.path.getsize(exe):,} bytes'')\")",
+      "Bash(tree:*)",
+      "Bash(findstr:*)",
+      "Bash(dir:*)",
+      "Bash(mkdir:*)",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\" \"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\test_new_architecture.py\")",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\" -m pip install pytest pytest-cov --quiet)",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\" -m pytest tests/test_squid_extractor.py -v)",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\" -m pytest tests/ -v --tb=short)",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\.venv\\Scripts\\python.exe\" -m pip:*)",
+      "Bash(\"C:\\Users\\User-OEM\\Desktop\\BoletosAutomação\\requirements.txt\")",
+      "Bash(git init:*)",
+      "Bash(git config:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
