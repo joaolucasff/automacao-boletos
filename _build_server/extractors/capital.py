@@ -1,31 +1,44 @@
 # ===============================================
-# Extrator CAPITAL - Código 100% Isolado
+# Extrator CAPITAL - Código 100% Isolado (v2.0)
 # ===============================================
 #
 # Este arquivo contém TODA a lógica de extração para boletos CAPITAL RS.
 # Qualquer mudança aqui NÃO afeta SQUID, NOVAX ou CREDVALE.
 #
-# CAPITAL RS também usa formato DANFE (similar ao SQUID, mas isolado)
+# VERSÃO 2.0 - Atualizado em 2025-11-04
+# - Suporte a CPF/CNPJ (campo unificado cpf_cnpj)
+# - Match por CNPJ+vencimento para boletos sem número NF no filename
+# - Validação de emails (máximo 2 válidos)
+# - Escolha inteligente de valor (duplicata vs total)
 #
 # ===============================================
 
 import re
+from typing import Dict, List, Tuple, Optional
+from decimal import Decimal
 from .base import BaseExtractor
+
 
 class CAPITALExtractor(BaseExtractor):
     """
-    Extrator EXCLUSIVO para boletos CAPITAL RS FIDC
+    Extrator EXCLUSIVO para boletos CAPITAL RS FIDC (v2.0)
 
     Características do boleto CAPITAL:
     - Usa formato DANFE (Nota Fiscal Eletrônica)
     - Campo DESTINATÁRIO/REMETENTE para pagador
-    - Seção FATURA (similar ao SQUID, mas pode ter variações)
-    - Suporta boleto tradicional como fallback
+    - Extração de CNPJ/CPF do destinatário
+    - Match com XML por CNPJ/CPF + vencimento
+    - Validação de emails completos (máximo 2)
+    - Suporte a duplicatas (parcelas)
     """
 
     @property
     def nome_fidc(self) -> str:
         return "CAPITAL"
+
+    # ========================================================================
+    # MÉTODOS ORIGINAIS (compatibilidade com BaseExtractor)
+    # ========================================================================
 
     def extrair_pagador(self, texto: str) -> str:
         """
@@ -72,17 +85,51 @@ class CAPITALExtractor(BaseExtractor):
         for i, linha in enumerate(linhas):
             if "VENCIMENTO" in linha.upper():
                 # Tentar na mesma linha
-                match = re.search(r'(\d{2}/\d{2}/\d{4})', linha)
+                match = re.search(r'(\d{2})/(\d{2})/\d{4}', linha)
                 if not match and i + 1 < len(linhas):
                     # Tentar na próxima linha
-                    match = re.search(r'(\d{2}/\d{2}/\d{4})', linhas[i + 1])
+                    match = re.search(r'(\d{2})/(\d{2})/\d{4}', linhas[i + 1])
 
                 if match:
-                    vencimento = match.group(1)
-                    # Retorna apenas DD-MM
-                    return vencimento[:5].replace("/", "-")
+                    dia = match.group(1)
+                    mes = match.group(2)
+                    return f"{dia}-{mes}"
 
         return "SEM_VENCIMENTO"
+
+    def extrair_numero_nota(self, texto: str) -> Optional[str]:
+        """
+        Extrai número da nota fiscal do boleto CAPITAL (DANFE)
+
+        Padrão DANFE: "NÚMERO DA NOTA ... 310018"
+        Padrão Boleto: "Número do Documento ... 310018/001"
+        Retorna apenas o número da nota (sem a parte "/XXX")
+        """
+        linhas = texto.splitlines()
+
+        # Tentativa 1: DANFE - "NÚMERO DA NOTA"
+        for i, linha in enumerate(linhas):
+            if 'MERO DA NOTA' in linha.upper():
+                # Verificar próximas 3 linhas
+                for j in range(i, min(i + 4, len(linhas))):
+                    linha_check = linhas[j]
+                    # Padrão: 310018 ou 0310018
+                    match = re.search(r'0?(\d{6})', linha_check)
+                    if match:
+                        return match.group(1)
+
+        # Tentativa 2: "Número do Documento" (formato boleto tradicional)
+        for i, linha in enumerate(linhas):
+            if 'MERO DO DOCUMENTO' in linha.upper():
+                # Verificar próximas 3 linhas
+                for j in range(i, min(i + 4, len(linhas))):
+                    linha_check = linhas[j]
+                    # Padrão: 310018/001 ou 0310018/001
+                    match = re.search(r'0?(\d{6})(?:/\d{3})?', linha_check)
+                    if match:
+                        return match.group(1)
+
+        return None
 
     def extrair_valor(self, texto: str) -> str:
         """
@@ -95,9 +142,6 @@ class CAPITALExtractor(BaseExtractor):
         4. Vencimento seguido de valor
         5. Qualquer R$ seguido de valor válido
         6. Código de barras
-
-        NOTA: Código similar ao SQUID, mas ISOLADO.
-        Mudanças aqui NÃO afetam extrator SQUID.
         """
 
         # PADRÃO 0: FATURA (DANFE CAPITAL)
@@ -162,6 +206,312 @@ class CAPITALExtractor(BaseExtractor):
                 pass
 
         return "SEM_VALOR"
+
+    # ========================================================================
+    # NOVOS MÉTODOS v2.0 - LÓGICA AVANÇADA COM XML
+    # ========================================================================
+
+    def extrair_cnpj_cpf_boleto(self, texto: str) -> Optional[str]:
+        """
+        Extrai CNPJ/CPF do DESTINATÁRIO no boleto
+
+        Busca após seção "DESTINATÁRIO/REMETENTE"
+        Retorna apenas dígitos (14 para CNPJ, 11 para CPF)
+        """
+        linhas = texto.splitlines()
+
+        # Buscar após DESTINATÁRIO/REMETENTE
+        for i, linha in enumerate(linhas):
+            if "DESTINAT" in linha.upper() and "REMETENTE" in linha.upper():
+                # Próximas 3-4 linhas podem conter o CNPJ/CPF
+                for j in range(i + 1, min(i + 5, len(linhas))):
+                    linha_busca = linhas[j]
+
+                    # Padrão CPF: XXX.XXX.XXX-XX
+                    match_cpf = re.search(r'(\d{3}\.\d{3}\.\d{3}-\d{2})', linha_busca)
+                    if match_cpf:
+                        cpf = match_cpf.group(1)
+                        return re.sub(r'[.-]', '', cpf)
+
+                    # Padrão CNPJ: XX.XXX.XXX/XXXX-XX
+                    match_cnpj = re.search(r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', linha_busca)
+                    if match_cnpj:
+                        cnpj = match_cnpj.group(1)
+                        return re.sub(r'[./-]', '', cnpj)
+
+        # Fallback: buscar após "Pagador"
+        for i, linha in enumerate(linhas):
+            if "PAGADOR" in linha.upper():
+                for j in range(i + 1, min(i + 3, len(linhas))):
+                    linha_busca = linhas[j]
+
+                    # CPF
+                    match_cpf = re.search(r'(\d{3}\.\d{3}\.\d{3}-\d{2})', linha_busca)
+                    if match_cpf:
+                        return re.sub(r'[.-]', '', match_cpf.group(1))
+
+                    # CNPJ
+                    match_cnpj = re.search(r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', linha_busca)
+                    if match_cnpj:
+                        return re.sub(r'[./-]', '', match_cnpj.group(1))
+
+        return None
+
+    def validar_email(self, email: str) -> bool:
+        """
+        Valida se email está completo (tem @ e domínio)
+
+        Exemplos:
+            "cliente@empresa.com" → True
+            "cliente@emp" → False (cortado)
+            "cliente" → False (sem @)
+        """
+        if not email or '@' not in email:
+            return False
+
+        partes = email.split('@')
+        if len(partes) != 2:
+            return False
+
+        usuario, dominio = partes
+
+        # Validações básicas
+        if not usuario or not dominio:
+            return False
+
+        # Domínio deve ter pelo menos um ponto e extensão
+        if '.' not in dominio:
+            return False
+
+        # Extensão deve ter pelo menos 2 caracteres
+        extensao = dominio.split('.')[-1]
+        if len(extensao) < 2:
+            return False
+
+        return True
+
+    def extrair_emails_validos(self, emails_xml: List[str], max_emails: int = 2) -> List[str]:
+        """
+        Extrai emails válidos do XML (máximo 2)
+
+        Ignora emails cortados/incompletos
+        """
+        emails_validos = []
+
+        for email in emails_xml[:5]:  # Checar até 5 emails
+            if self.validar_email(email):
+                emails_validos.append(email)
+                if len(emails_validos) >= max_emails:
+                    break
+
+        return emails_validos
+
+    def escolher_valor_correto(self, dados_xml: dict, vencimento_boleto: str) -> Tuple[str, str]:
+        """
+        Escolhe o valor correto baseado em duplicatas
+
+        Lógica:
+            - Se tem duplicatas: buscar por vencimento → usar duplicata.valor
+            - Se NÃO tem duplicatas: usar valor_total
+
+        Returns:
+            (valor_formatado, origem)
+            origem: "DUPLICATA" ou "TOTAL"
+        """
+        duplicatas = dados_xml.get('duplicatas', [])
+
+        if duplicatas:
+            # Tem duplicatas - buscar por vencimento
+            if vencimento_boleto:
+                dia, mes = vencimento_boleto.split('-')
+
+                for dup in duplicatas:
+                    venc_xml = dup.get('vencimento', '')  # "2025-12-12"
+                    if venc_xml:
+                        # Pegar apenas DD-MM do XML
+                        partes = venc_xml.split('-')  # ["2025", "12", "12"]
+                        if len(partes) == 3:
+                            dia_xml = partes[2]
+                            mes_xml = partes[1]
+
+                            if dia == dia_xml and mes == mes_xml:
+                                # Match! Usar valor desta duplicata
+                                valor = dup['valor']
+                                if isinstance(valor, Decimal):
+                                    valor_formatado = f"R$ {valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                                else:
+                                    valor_formatado = f"R$ {valor}"
+                                return (valor_formatado, "DUPLICATA")
+
+            # Se não achou duplicata por vencimento, usar primeira duplicata
+            if duplicatas:
+                valor = duplicatas[0]['valor']
+                if isinstance(valor, Decimal):
+                    valor_formatado = f"R$ {valor:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                else:
+                    valor_formatado = f"R$ {valor}"
+                return (valor_formatado, "DUPLICATA_PRIMEIRA")
+
+        # Não tem duplicatas - usar valor total
+        valor_total = dados_xml.get('valor_total')
+        if valor_total:
+            if isinstance(valor_total, (Decimal, float)):
+                valor_formatado = f"R$ {valor_total:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+            else:
+                valor_formatado = f"R$ {valor_total}"
+            return (valor_formatado, "TOTAL")
+
+        return ("R$ 0,00", "NAO_ENCONTRADO")
+
+    def buscar_xml_por_cnpj_e_vencimento(
+        self,
+        cnpj_boleto: str,
+        vencimento_boleto: str,
+        mapa_xmls: Dict[str, dict]
+    ) -> Tuple[Optional[str], Optional[dict], Optional[dict]]:
+        """
+        Busca XML por CNPJ/CPF e vencimento
+
+        Returns:
+            (numero_nota, dados_xml, duplicata_matched)
+        """
+        if not cnpj_boleto or not vencimento_boleto:
+            return (None, None, None)
+
+        # Converter vencimento "DD-MM" para comparar
+        dia, mes = vencimento_boleto.split('-')
+
+        # Buscar em todos os XMLs
+        for numero_nota, dados_xml in mapa_xmls.items():
+            # Usar 'cpf_cnpj' que funciona tanto para CPF quanto CNPJ
+            cpf_cnpj_xml = dados_xml.get('cpf_cnpj', '') or dados_xml.get('cnpj', '')
+
+            # Match por CNPJ/CPF
+            if cnpj_boleto == cpf_cnpj_xml:
+                # Tem match de CNPJ - agora buscar duplicata por vencimento
+                duplicatas = dados_xml.get('duplicatas', [])
+
+                if duplicatas:
+                    for dup in duplicatas:
+                        venc_xml = dup.get('vencimento', '')  # "2025-11-17"
+                        if venc_xml:
+                            partes = venc_xml.split('-')  # ["2025", "11", "17"]
+                            if len(partes) == 3:
+                                dia_xml = partes[2]
+                                mes_xml = partes[1]
+
+                                if dia == dia_xml and mes == mes_xml:
+                                    # Match perfeito!
+                                    return (numero_nota, dados_xml, dup)
+
+                    # Se não achou duplicata por vencimento, mas CNPJ bateu
+                    # Retornar primeiro (pode ter apenas 1 duplicata)
+                    if len(duplicatas) == 1:
+                        return (numero_nota, dados_xml, duplicatas[0])
+
+                else:
+                    # Não tem duplicatas - nota de parcela única
+                    return (numero_nota, dados_xml, None)
+
+        return (None, None, None)
+
+    # ========================================================================
+    # MÉTODO DE PROCESSAMENTO COMPLETO
+    # ========================================================================
+
+    def processar_boleto_com_xml(
+        self,
+        texto_pdf: str,
+        mapa_xmls: Dict[str, dict]
+    ) -> dict:
+        """
+        Processa um boleto CAPITAL usando XML como fonte principal
+
+        Match por CNPJ/CPF + vencimento
+
+        Returns:
+            {
+                'status': 'ok' | 'erro',
+                'pagador': str,
+                'vencimento': str,
+                'valor': str,
+                'numero_nota': str,
+                'emails': [email1, email2],
+                'origem_valor': str,
+                'erro_msg': str
+            }
+        """
+        resultado = {
+            'status': 'erro',
+            'pagador': 'SEM_PAGADOR',
+            'vencimento': 'SEM_VENCIMENTO',
+            'valor': 'SEM_VALOR',
+            'numero_nota': 'SEM_NOTA',
+            'emails': [],
+            'origem_valor': '',
+            'erro_msg': ''
+        }
+
+        try:
+            # 1. Extrair dados do boleto
+            cnpj_boleto = self.extrair_cnpj_cpf_boleto(texto_pdf)
+            vencimento_boleto = self.extrair_vencimento(texto_pdf)
+            numero_nota_boleto = self.extrair_numero_nota(texto_pdf)
+
+            if not cnpj_boleto:
+                resultado['erro_msg'] = "Não foi possível extrair CNPJ/CPF do boleto"
+                return resultado
+
+            if not vencimento_boleto or vencimento_boleto == "SEM_VENCIMENTO":
+                resultado['erro_msg'] = "Não foi possível extrair vencimento do boleto"
+                return resultado
+
+            # 2. Buscar XML - priorizar match direto por número da nota
+            numero_nota = None
+            dados_xml = None
+            duplicata_matched = None
+
+            # Tentativa 1: Match direto por número da nota (mais preciso)
+            if numero_nota_boleto and numero_nota_boleto in mapa_xmls:
+                numero_nota = numero_nota_boleto
+                dados_xml = mapa_xmls[numero_nota]
+
+            # Tentativa 2: Se não encontrou, buscar por CNPJ + vencimento (fallback)
+            if not dados_xml:
+                numero_nota, dados_xml, duplicata_matched = self.buscar_xml_por_cnpj_e_vencimento(
+                    cnpj_boleto, vencimento_boleto, mapa_xmls
+                )
+
+            if not numero_nota or not dados_xml:
+                resultado['erro_msg'] = f"XML não encontrado para nota={numero_nota_boleto or 'N/A'}, CNPJ={cnpj_boleto}, vencimento={vencimento_boleto}"
+                return resultado
+
+            # 3. Usar dados do XML
+            pagador = dados_xml.get('nome', 'SEM_PAGADOR')
+            valor, origem_valor = self.escolher_valor_correto(dados_xml, vencimento_boleto)
+
+            # 4. Extrair emails válidos
+            emails_xml = dados_xml.get('emails', [])
+            emails_validos = self.extrair_emails_validos(emails_xml, max_emails=2)
+
+            # 5. Montar resultado
+            resultado['status'] = 'ok'
+            resultado['pagador'] = pagador
+            resultado['vencimento'] = vencimento_boleto
+            resultado['valor'] = valor
+            resultado['numero_nota'] = numero_nota
+            resultado['emails'] = emails_validos
+            resultado['origem_valor'] = origem_valor
+
+            return resultado
+
+        except Exception as e:
+            resultado['erro_msg'] = f"Exceção: {type(e).__name__}: {str(e)}"
+            return resultado
+
+    # ========================================================================
+    # MÉTODO AUXILIAR
+    # ========================================================================
 
     def _limpar_nome(self, nome: str) -> str:
         """Remove CNPJ/CPF e caracteres indesejados do nome do pagador"""

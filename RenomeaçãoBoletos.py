@@ -1,13 +1,8 @@
 # ===============================================
-# Automacao de Renomeacao de Boletos PDF - v11
-# Arquitetura em Camadas com Extratores Isolados
+# Automacao de Renomeacao de Boletos PDF - v10
+# Extracao via Numero do Documento + Regex robusto
 # Suporta: NOVAX, Capital RS, Credvale, Squid
-#
-# NOVA VERSÃO (04/11/2025):
-# - Cada FIDC tem extrator isolado (módulo extractors/)
-# - Editar SQUID não afeta CAPITAL, NOVAX ou CREDVALE
-# - Prevenção de regressões com testes automatizados
-# - Factory Pattern para seleção automática
+# 100% a prova de erros!
 # ===============================================
 
 import os
@@ -17,14 +12,13 @@ import json
 import time
 import pdfplumber
 from unidecode import unidecode
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional
 
-# Importar configuração centralizada (versão servidor com caminhos dinâmicos)
-from config_server import (
+# Importar configuração centralizada
+from config import (
     PASTA_ENTRADA,
     PASTA_DESTINO,
     PASTA_NOTAS,
-    PASTA_AUDITORIA,
     ARQUIVO_LOG_RENOMEACAO as ARQUIVO_LOG
 )
 
@@ -32,9 +26,6 @@ from config_server import (
 from xml_nfe_reader import indexar_xmls_por_nota
 from difflib import SequenceMatcher
 from decimal import Decimal
-
-# Importar módulo de extratores isolados (v2.0 - Arquitetura em camadas)
-from extractors import ExtractorFactory
 
 # Tentar importar Ollama (pode não estar instalado)
 try:
@@ -76,16 +67,6 @@ def detectar_fidc(texto: str) -> str:
         return "CREDVALE"
     if "SQUID" in u:
         return "SQUID"
-
-    # DANFE genérico (CAPITAL ou SQUID) - detectar pelo formato
-    # Se tem DANFE + JOTA JOTA, provavelmente é SQUID ou CAPITAL
-    if "DANFE" in u and "DOCUMENTO AUXILIAR" in u:
-        # Se tem FATURA, é DANFE (pode ser CAPITAL ou SQUID)
-        if "FATURA" in u:
-            # Tentar distinguir por outros campos
-            # Por enquanto, retornar CAPITAL como padrão (usa mesma função)
-            return "CAPITAL"
-
     return "DESCONHECIDO"
 
 # ------- normalizadores ------- #
@@ -104,11 +85,6 @@ def corta_apos_cnpj_ou_virgula(nome: str) -> str:
 
     # Remove " - " seguido de números (formato CNPJ: XX.XXX.XXX/XXXX-XX ou CPF: XXX.XXX.XXX-XX)
     nome = re.sub(r'\s*-\s*\d{2,3}[\.\s]*\d{3}[\.\s]*\d{3}[/-]?\d{0,4}[-]?\d{0,2}.*$', '', nome)
-
-    # Remove CNPJ/CPF quando aparece DIRETO após nome (DANFE)
-    # Formato: "NOME 83.601.534/0001-09" ou "NOME 123.456.789-01"
-    # Captura: espaço + CNPJ (14 dig) ou CPF (11 dig) + tudo depois
-    nome = re.sub(r'\s+\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2}.*$', '', nome)
 
     return nome.strip()
 
@@ -182,114 +158,34 @@ def valor_to_cents(valor) -> int:
     except:
         return 0
 
-def normalizar_nome_empresa(nome: str) -> str:
-    """
-    Normaliza nome de empresa para matching mais flexível.
-    Remove sufixos comuns, pontuações, espaços extras.
-    """
-    if not nome:
-        return ""
-
-    # Converter para maiúsculas
-    nome_norm = nome.upper().strip()
-
-    # Remover pontuação
-    nome_norm = re.sub(r'[.,\-]', ' ', nome_norm)
-
-    # Remover sufixos comuns de empresas
-    sufixos = [
-        'LTDA', 'LTD', 'LIMITADA',
-        'EIRELI', 'EPP', 'ME', 'MEI',
-        'S/A', 'SA', 'S.A.',
-        'SOCIEDADE', 'EMPRESARIAL',
-        'CIA', 'COMPANHIA'
-    ]
-
-    for sufixo in sufixos:
-        # Remover sufixo se estiver no final ou isolado
-        nome_norm = re.sub(rf'\b{re.escape(sufixo)}\b', '', nome_norm)
-
-    # Expandir abreviações comuns
-    abreviacoes = {
-        r'\bENG\b': 'ENGENHARIA',
-        r'\bCONST\b': 'CONSTRUCAO',
-        r'\bEMPREENDIMENTOS?\b': 'EMPREENDIMENTOS',
-        r'\bSPE\b': 'SOCIEDADE PROPOSITO ESPECIFICO'
-    }
-
-    for abrev, completo in abreviacoes.items():
-        nome_norm = re.sub(abrev, completo, nome_norm)
-
-    # Remover espaços múltiplos
-    nome_norm = re.sub(r'\s+', ' ', nome_norm).strip()
-
-    return nome_norm
-
 def calcular_similaridade(str1: str, str2: str) -> float:
-    """Calcula similaridade entre duas strings (0.0 a 1.0) com normalização"""
+    """Calcula similaridade entre duas strings (0.0 a 1.0)"""
     if not str1 or not str2:
         return 0.0
-
-    # Normalizar ambas as strings
-    norm1 = normalizar_nome_empresa(str1)
-    norm2 = normalizar_nome_empresa(str2)
-
-    # Calcular similaridade
-    return SequenceMatcher(None, norm1, norm2).ratio()
+    return SequenceMatcher(None, str1.upper(), str2.upper()).ratio()
 
 def extrair_cnpj_do_boleto(texto: str) -> str:
     """
-    Extrai CPF ou CNPJ do pagador/destinatário do boleto.
+    Extrai CNPJ do pagador do boleto.
 
-    Suporta 5 formatos diferentes de FIDCs:
-    - DANFE (CAPITAL/SQUID): "DESTINATÁRIO REMETENTE" + linha com CNPJ
-    - NOVAX: "Pagador: NOME CNPJ/ CPF : XX.XXX.XXX/XXXX-XX ou XXX.XXX.XXX-XX" (ficha de compensação)
-    - SQUID boleto: "Pagador ... - CNPJ: XX.XXX.XXX/XXXX-XX"
-    - CAPITAL RS boleto: "Pagador ... , CNPJ: XX.XXX.XXX/XXXX-XX"
+    Suporta 4 formatos diferentes de FIDCs:
+    - NOVAX: "Pagador: NOME CNPJ/ CPF : XX.XXX.XXX/XXXX-XX" (ficha de compensação)
+    - SQUID: "Pagador ... - CNPJ: XX.XXX.XXX/XXXX-XX"
+    - CAPITAL RS: "Pagador ... , CNPJ: XX.XXX.XXX/XXXX-XX"
     - CREDVALE: "Pagador ... - EPP - XX.XXX.XXX/XXXX-XX" (sem palavra CNPJ)
-
-    Retorna: CPF (11 dígitos) ou CNPJ (14 dígitos), apenas números
     """
-    # TENTATIVA 0: DANFE (CAPITAL/SQUID) - PRIORIDADE MÁXIMA
-    # Formato:
-    # DESTINATÁRIO REMETENTE
-    # NOME/RAZÃO SOCIAL    CNPJ/CPF    DATA
-    # EMPRESA LTDA         83.601.534/0001-09    27/08/2025
-    match_danfe = re.search(
-        r'DESTINAT[AÁ]RIO.*?REMETENTE.*?CNPJ[\/\s]*CPF.*?[\r\n]+.*?(\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2})',
-        texto,
-        re.IGNORECASE | re.DOTALL
-    )
-    if match_danfe:
-        doc_limpo = normalizar_cnpj(match_danfe.group(1))
-        if len(doc_limpo) == 11 or len(doc_limpo) == 14:
-            return doc_limpo
-
-    # TENTATIVA 1: Padrão específico NOVAX - CNPJ (mais confiável)
+    # TENTATIVA 1: Padrão específico NOVAX (mais confiável)
     # "Pagador: NOME CNPJ/ CPF : XX.XXX.XXX/XXXX-XX"
-    match_novax_cnpj = re.search(
+    match_novax = re.search(
         r'Pagador:\s*([A-Z\s]+)\s+CNPJ[\/\s]*CPF\s*[:\s]*(\d{2}\.\d{3}\.\d{3}\/\d{4}\-\d{2})',
         texto,
         re.IGNORECASE
     )
 
-    if match_novax_cnpj:
-        cnpj_limpo = normalizar_cnpj(match_novax_cnpj.group(2))
+    if match_novax:
+        cnpj_limpo = normalizar_cnpj(match_novax.group(2))
         if len(cnpj_limpo) == 14:
             return cnpj_limpo
-
-    # TENTATIVA 1B: Padrão específico NOVAX - CPF
-    # "Pagador: NOME CNPJ/ CPF : XXX.XXX.XXX-XX"
-    match_novax_cpf = re.search(
-        r'Pagador:\s*([A-Z\s]+)\s+CNPJ[\/\s]*CPF\s*[:\s]*(\d{3}\.\d{3}\.\d{3}\-\d{2})',
-        texto,
-        re.IGNORECASE
-    )
-
-    if match_novax_cpf:
-        cpf_limpo = normalizar_cnpj(match_novax_cpf.group(2))  # normalizar_cnpj funciona para CPF também
-        if len(cpf_limpo) == 11:
-            return cpf_limpo
 
     # TENTATIVA 2: Extrair seção do Pagador (outros FIDCs)
     # Buscar na segunda metade do documento primeiro (onde está ficha de compensação)
@@ -316,31 +212,26 @@ def extrair_cnpj_do_boleto(texto: str) -> str:
     secao_pagador = match_secao.group(1)
 
     # Padrões em ordem de prioridade (mais específico primeiro)
-    # Nota: Agora aceitamos CNPJ (14 dígitos) ou CPF (11 dígitos)
     padroes = [
-        # Padrão 1: "- CNPJ:" ou "- CPF:" (SQUID)
-        r'[-]\s*(?:CNPJ|CPF)[:\s]+(\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2})',
-        # Padrão 2: ", CNPJ:" ou ", CPF:" (CAPITAL RS)
-        r',\s*(?:CNPJ|CPF)[:\s]+(\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2})',
-        # Padrão 3: "- EPP -" (CREDVALE - sem palavra CNPJ/CPF)
-        r'[-]\s*EPP\s*[-]\s*(\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2})',
+        # Padrão 1: "- CNPJ:" (SQUID)
+        r'[-]\s*CNPJ[:\s]+(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})',
+        # Padrão 2: ", CNPJ:" (CAPITAL RS)
+        r',\s*CNPJ[:\s]+(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})',
+        # Padrão 3: "- EPP -" (CREDVALE - sem palavra CNPJ)
+        r'[-]\s*EPP\s*[-]\s*(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})',
         # Padrão 4: "CNPJ/ CPF :" (NOVAX - fallback)
-        r'CNPJ[\/\s]*(?:CPF)?[:\s]+(\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2})',
-        # Padrão 5: Primeiro CNPJ/CPF encontrado na seção (fallback final)
-        # Tenta CNPJ primeiro (14 dígitos)
-        r'(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})',
-        # Depois tenta CPF (11 dígitos)
-        r'(\d{3}[\.\s]?\d{3}[\.\s]?\d{3}[\-\s]?\d{2})'
+        r'CNPJ[\/\s]*(?:CPF)?[:\s]+(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})',
+        # Padrão 5: Primeiro CNPJ encontrado na seção (fallback final)
+        r'(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})'
     ]
 
     for padrao in padroes:
         match = re.search(padrao, secao_pagador, re.IGNORECASE)
         if match:
-            doc_raw = match.group(1)
-            doc_limpo = normalizar_cnpj(doc_raw)
-            # Aceitar CPF (11 dígitos) ou CNPJ (14 dígitos)
-            if len(doc_limpo) == 11 or len(doc_limpo) == 14:
-                return doc_limpo
+            cnpj_raw = match.group(1)
+            cnpj_limpo = normalizar_cnpj(cnpj_raw)
+            if len(cnpj_limpo) == 14:
+                return cnpj_limpo
 
     return ""
 
@@ -417,7 +308,7 @@ def extrair_numero_nota_boleto(texto: str) -> str:
 def converter_vencimento_para_data_xml(vencimento_str: str) -> str:
     """
     Converte vencimento DD-MM para formato YYYY-MM-DD do XML
-    Lógica inteligente: se a data já passou, assume próximo ano
+    Assume ano atual (2025 se mês >= mês atual, senão 2026)
     """
     import datetime
 
@@ -432,30 +323,13 @@ def converter_vencimento_para_data_xml(vencimento_str: str) -> str:
     dia = int(match.group(1))
     mes = int(match.group(2))
 
-    # Determinar ano dinamicamente
+    # Determinar ano (assumir 2025 ou 2026)
     hoje = datetime.date.today()
-    ano_atual = hoje.year
+    ano = 2025
 
-    # Tentar com ano atual primeiro
-    try:
-        data_venc = datetime.date(ano_atual, mes, dia)
-
-        # Lógica: Se a data está no FUTURO há mais de 300 dias, provavelmente é ano passado
-        # Se a data está no PASSADO há mais de 60 dias, provavelmente é próximo ano
-        diff_dias = (data_venc - hoje).days  # Positivo = futuro, Negativo = passado
-
-        if diff_dias < -60:
-            # Data passou há mais de 60 dias → assumir próximo ano
-            ano = ano_atual + 1
-        elif diff_dias > 300:
-            # Data está muito no futuro (>300 dias) → assumir ano passado
-            ano = ano_atual - 1
-        else:
-            # Data está próxima (entre -60 e +300 dias) → usar ano atual
-            ano = ano_atual
-    except ValueError:
-        # Data inválida (ex: 31 de fevereiro), usar ano atual
-        ano = ano_atual
+    # Se o mês é menor que outubro (mês atual), assumir 2026
+    if mes < 10:
+        ano = 2026
 
     return f"{ano}-{mes:02d}-{dia:02d}"
 
@@ -492,7 +366,7 @@ def extrair_numero_nota_xml(cnpj_boleto: str, valor_boleto_cents: int, nome_bole
         tipo_match = ""  # "DUPLICATA" ou "TOTAL"
         duplicata_matched = None  # Guarda a duplicata que deu match
 
-        cnpj_xml = dados_xml.get('cpf_cnpj', '')  # Pode ser CPF (11 dig) ou CNPJ (14 dig)
+        cnpj_xml = dados_xml.get('cnpj', '')
         nome_xml = dados_xml.get('nome', '').upper().strip()
 
         # === PRIORIDADE 1: MATCH POR DUPLICATA ===
@@ -504,7 +378,7 @@ def extrair_numero_nota_xml(cnpj_boleto: str, valor_boleto_cents: int, nome_bole
                 valor_dup_cents = int(dup['valor'] * 100) if dup['valor'] else 0
                 venc_dup = dup['vencimento']
 
-                # Match perfeito: CPF/CNPJ + Vencimento + Valor da duplicata
+                # Match perfeito: CNPJ + Vencimento + Valor da duplicata
                 if cnpj_boleto and cnpj_xml and cnpj_boleto == cnpj_xml:
                     if venc_dup == vencimento_xml_format:
                         if valor_dup_cents == valor_boleto_cents:
@@ -575,68 +449,26 @@ def extrair_numero_nota_xml(cnpj_boleto: str, valor_boleto_cents: int, nome_bole
 
     return ("", None)
 
-def obter_numero_nota(cnpj_boleto: str, valor_boleto: str, nome_boleto: str, vencimento_boleto: str, texto_boleto: str, mapa_xmls: dict, fidc: str = "", arquivo_pdf: str = "") -> tuple:
+def obter_numero_nota(cnpj_boleto: str, valor_boleto: str, nome_boleto: str, vencimento_boleto: str, texto_boleto: str, mapa_xmls: dict) -> tuple:
     """
     Função orquestradora para obter número da nota com fallbacks
 
     Prioridade (À PROVA DE ERROS!):
-    0. SQUID: NÚMERO DO ARQUIVO (fonte mais confiável para SQUID!)
-    1. NÚMERO DO DOCUMENTO do boleto + busca duplicata por vencimento
-    2. XML via matching inteligente (CNPJ + vencimento + valor da duplicata)
-    3. XML via fallback (CNPJ + valor total)
-    4. Retorna "SEM_NOTA" se não encontrar
-
-    Args:
-        fidc: Nome do FIDC detectado ("SQUID", "CAPITAL", etc.)
-        arquivo_pdf: Caminho completo do arquivo PDF (para extração de número da NF do filename)
+    0. NÚMERO DO DOCUMENTO do boleto (fonte mais confiável!) + busca duplicata por vencimento
+    1. XML via matching inteligente (CNPJ + vencimento + valor da duplicata)
+    2. XML via fallback (CNPJ + valor total)
+    3. Retorna "SEM_NOTA" se não encontrar
 
     Retorna: (numero_formatado, dados_xml|None, origem, duplicata|None)
     - numero_formatado: "NF 123456" ou "NF SEM_NOTA"
     - dados_xml: dict com dados completos do XML se encontrado, None caso contrário
-    - origem: "FILENAME", "NUMERO_DOC_BOLETO", "XML", "BOLETO" ou "NAO_ENCONTRADO"
+    - origem: "NUMERO_DOC_BOLETO", "XML", "BOLETO" ou "NAO_ENCONTRADO"
     - duplicata: dict da duplicata que deu match (se match foi por duplicata), None caso contrário
     """
     # Converter valor para centavos para comparação
     valor_cents = valor_to_cents(valor_boleto)
 
-    # === PRIORIDADE 0: SQUID - NÚMERO DO ARQUIVO (FONTE MAIS CONFIÁVEL PARA SQUID!) ===
-    # Para SQUID, o nome do arquivo é a fonte mais confiável
-    # Exemplo: "3-0305537.pdf" → NF 305537
-    if fidc == "SQUID" and arquivo_pdf:
-        from extractors.squid import SQUIDExtractor
-        numero_nf_arquivo = SQUIDExtractor.extrair_numero_nf_do_filename(arquivo_pdf)
-
-        if numero_nf_arquivo and numero_nf_arquivo != "SEM_NOTA":
-            print(f"    [SQUID-FILENAME] NF {numero_nf_arquivo} extraída do nome do arquivo")
-
-            # Validar que este número existe nos XMLs
-            if mapa_xmls and numero_nf_arquivo in mapa_xmls:
-                dados_xml = mapa_xmls[numero_nf_arquivo]
-                print(f"    [SQUID-XML-MATCH] XML encontrado para NF {numero_nf_arquivo}")
-
-                # Buscar duplicata por vencimento
-                vencimento_xml_format = converter_vencimento_para_data_xml(vencimento_boleto)
-                duplicata_matched = None
-
-                if vencimento_xml_format and dados_xml.get('duplicatas'):
-                    for dup in dados_xml['duplicatas']:
-                        if dup['vencimento'] == vencimento_xml_format:
-                            duplicata_matched = dup
-                            print(f"    [SQUID-DUPLICATA] Duplicata encontrada: venc={vencimento_boleto}, valor=R$ {dup['valor']}")
-                            break
-
-                # Se tem apenas 1 duplicata, usar ela
-                if not duplicata_matched and dados_xml.get('duplicatas') and len(dados_xml['duplicatas']) == 1:
-                    duplicata_matched = dados_xml['duplicatas'][0]
-                    print(f"    [SQUID-DUPLICATA-UNICA] Nota tem apenas 1 parcela: R$ {duplicata_matched['valor']}")
-
-                return (f"NF {numero_nf_arquivo}", dados_xml, "FILENAME", duplicata_matched)
-            else:
-                # XML não encontrado, mas usar número do arquivo mesmo assim
-                print(f"    [SQUID-FILENAME-SEM-XML] NF {numero_nf_arquivo} (XML não disponível)")
-                return (f"NF {numero_nf_arquivo}", None, "FILENAME", None)
-
-    # === PRIORIDADE 1: NÚMERO DO DOCUMENTO DO BOLETO (FONTE MAIS CONFIÁVEL GERAL!) ===
+    # === PRIORIDADE 0: NÚMERO DO DOCUMENTO DO BOLETO (FONTE MAIS CONFIÁVEL!) ===
     # O campo "Número do Documento" é o mais confiável pois vem direto do sistema emissor
     numero_doc_boleto = extrair_numero_nota_boleto(texto_boleto)
 
@@ -783,29 +615,12 @@ def extrair_valor_robusto(texto: str) -> str:
     Extração de valor ULTRA ROBUSTA com múltiplos padrões
 
     Tenta extrair o valor do boleto em ordem de confiabilidade:
-    0. Seção FATURA (DANFE) - padrão "001 DD/MM/YYYY valor"
     1. Campo "Valor Documento" ou "(=) Valor Documento"
     2. Linha que contém número do documento + vencimento + valor
     3. Primeiro valor em formato R$ X.XXX,XX encontrado
     4. Valor do código de barras (posições 37-47)
     """
-    # PADRÃO 0: FATURA (DANFE - CAPITAL/SQUID) - PRIORIDADE MÁXIMA!
-    # Formato DANFE:
-    # FATURA
-    # NÚMERO VENCIMENTO VALOR ...
-    # 001 25/09/2025 3.280,82
-    # IMPORTANTE: Capturar APENAS o valor imediatamente após a data, sem espaços extras
-    match_fatura = re.search(
-        r'FATURA.*?[\r\n]+.*?[\r\n]+\s*\d{3}\s+\d{2}/\d{2}/\d{4}\s+(\d{1,3}(?:\.\d{3})*,\d{2})(?:\s|$)',
-        texto,
-        re.IGNORECASE | re.DOTALL
-    )
-    if match_fatura:
-        valor_str = match_fatura.group(1)
-        print(f"    [VALOR-FATURA-DANFE] Valor encontrado na seção FATURA: R$ {valor_str}")
-        return f"R$ {valor_str}"
-
-    # PADRÃO 1: (=) Valor Documento ou Valor Documento (boletos tradicionais)
+    # PADRÃO 1: (=) Valor Documento ou Valor Documento (mais confiável)
     padroes_valor_doc = [
         r'\(=\)\s*Valor\s+(?:do\s+)?Documento\s*[:\s]*(?:R\$\s*)?([\d\.\,]+)',
         r'Valor\s+(?:do\s+)?Documento\s*[:\s]*(?:R\$\s*)?([\d\.\,]+)',
@@ -866,54 +681,30 @@ def extrair_valor_robusto(texto: str) -> str:
     return "SEM_VALOR"
 
 def extrair_dados_capital(texto: str):
-    """
-    Extrator para CAPITAL e SQUID (ambos usam DANFE)
-
-    Suporta:
-    - DANFE (Nota Fiscal): "DESTINATÁRIO REMETENTE" + "FATURA"
-    - Boleto tradicional: "Pagador" + "Vencimento"
-    """
     linhas = texto.splitlines()
     pagador = "SEM_PAGADOR"
     vencimento = "SEM_VENCIMENTO"
     valor = "SEM_VALOR"
 
-    # Pagador: tentar DANFE primeiro (DESTINATÁRIO), depois boleto (Pagador)
-    # DANFE: linha com "DESTINATÁRIO" seguida de linha com nome
+    # Pagador: linha seguinte
     for i, linha in enumerate(linhas):
-        if "DESTINAT" in linha.upper() and "REMETENTE" in linha.upper():
-            # Próxima linha tem "NOME/RAZÃO SOCIAL"
-            # Linha seguinte tem o nome do destinatário
-            if i + 2 < len(linhas):
-                linha_nome = linhas[i + 2].strip()
-                # Validar que não é cabeçalho (não contém "CNPJ/CPF")
-                if "CNPJ" not in linha_nome and "CPF" not in linha_nome:
-                    pagador = corta_apos_cnpj_ou_virgula(linha_nome)
-                    if pagador and pagador != "SEM_PAGADOR":
-                        break
+        if "Pagador" in linha:
+            if i + 1 < len(linhas):
+                pagador = linhas[i + 1].strip()
+                pagador = corta_apos_cnpj_ou_virgula(pagador)
+            break
 
-    # Fallback: Pagador (boleto tradicional) - case-insensitive
-    if pagador == "SEM_PAGADOR":
-        for i, linha in enumerate(linhas):
-            if "PAGADOR" in linha.upper():
-                if i + 1 < len(linhas):
-                    pagador = linhas[i + 1].strip()
-                    pagador = corta_apos_cnpj_ou_virgula(pagador)
-                    break
-
-    # Vencimento: CASE-INSENSITIVE agora!
+    # Vencimento: mesma linha ou próxima
     for i, linha in enumerate(linhas):
-        if "VENCIMENTO" in linha.upper():
-            # Tentar na mesma linha
+        if "Vencimento" in linha:
             m = re.search(r'(\d{2}/\d{2}/\d{4})', linha)
             if not m and i + 1 < len(linhas):
-                # Tentar na próxima linha
                 m = re.search(r'(\d{2}/\d{2}/\d{4})', linhas[i + 1])
             if m:
                 vencimento = m.group(1)
                 break
 
-    # Valor: usar extração robusta (agora com suporte a FATURA)
+    # Valor: usar extração robusta
     valor = extrair_valor_robusto(texto)
 
     if vencimento != "SEM_VENCIMENTO":
@@ -1051,144 +842,34 @@ def extrair_dados_regex(texto: str):
 
 def extrair_dados(texto: str) -> Tuple[str, str, str, str]:
     """
-    Função principal de extração usando Arquitetura em Camadas (v2.0)
+    Função principal de extração com fallback inteligente:
+    1. Tenta IA (Ollama + Mistral) - funciona para todos os tipos de boletos
+    2. Se falhar, usa Regex específico por FIDC
 
-    NOVA ARQUITETURA (desde 04/11/2025):
-    1. Detecta o FIDC automaticamente
-    2. Usa ExtractorFactory para selecionar extrator isolado
-    3. Cada FIDC tem seu próprio código independente
-
-    Benefícios:
-    - Isolamento total: editar SQUID não afeta CAPITAL
-    - Testabilidade: cada extrator testado separadamente
-    - Prevenção de regressões: testes impedem bugs
-
-    Retorna: (pagador, vencimento, valor, fidc)
+    Retorna: (pagador, vencimento, valor, metodo_usado)
     """
-    # Passo 1: Detectar o FIDC (mantém função existente)
-    fidc = detectar_fidc(texto)
-    print(f"    [FIDC DETECTADO] {fidc}")
+    metodo = "DESCONHECIDO"
 
-    # Passo 2: Usar Factory para pegar extrator isolado
-    extractor = ExtractorFactory.get_extractor(fidc)
-    print(f"    [EXTRATOR] Usando {extractor.__class__.__name__}")
+    # Tentativa 1: Extração via IA (universal)
+    if USAR_IA and OLLAMA_DISPONIVEL:
+        print("    Tentando extracao via IA...")
+        pagador, vencimento, valor = extrair_dados_ia(texto)
 
-    # Passo 3: Extrair dados usando código isolado do FIDC
-    pagador, vencimento, valor = extractor.extrair_dados(texto)
+        if pagador and vencimento and valor:
+            # IA teve sucesso!
+            fidc = detectar_fidc(texto)
+            return pagador, vencimento, valor, f"IA-{fidc}"
 
-    # Passo 4: Retornar dados + FIDC
-    return pagador, vencimento, valor, fidc
+    # Tentativa 2: Fallback para Regex
+    print("    Usando fallback Regex...")
+    pagador, vencimento, valor, fidc = extrair_dados_regex(texto)
 
-
-def processar_boleto_v2(texto: str, mapa_xmls: Dict[str, dict]) -> dict:
-    """
-    Função v2.0 que usa processar_boleto_com_xml() dos extractors
-
-    Retorna:
-        {
-            'status': 'ok' | 'erro',
-            'pagador': str,
-            'vencimento': str,
-            'valor': str,
-            'numero_nota': str,
-            'fidc': str,
-            'emails': [email1, email2],
-            'origem_valor': str,
-            'erro_msg': str
-        }
-    """
-    # Detectar FIDC
-    fidc = detectar_fidc(texto)
-
-    # Usar Factory para pegar extrator
-    extractor = ExtractorFactory.get_extractor(fidc)
-
-    # Processar com XML
-    resultado = extractor.processar_boleto_com_xml(texto, mapa_xmls)
-
-    # Adicionar FIDC ao resultado
-    resultado['fidc'] = fidc
-
-    return resultado
-
+    return pagador, vencimento, valor, f"REGEX-{fidc}"
 
 # ======== LOG ======== #
 def registrar_erro(arquivo, mensagem):
     with open(ARQUIVO_LOG, "a", encoding="utf-8") as log:
         log.write(f"Erro no arquivo {arquivo}: {mensagem}\n")
-
-def gerar_relatorio_emails(dados_processados: list, pasta_auditoria: str):
-    """
-    Gera relatório TXT com todos os emails extraídos dos boletos.
-
-    Args:
-        dados_processados: Lista de dicts com dados dos boletos processados
-                          Cada dict contém: pagador, numero_nota, emails, fidc
-        pasta_auditoria: Caminho da pasta onde salvar o relatório
-    """
-    try:
-        # Criar pasta de auditoria se não existir
-        os.makedirs(pasta_auditoria, exist_ok=True)
-
-        # Nome do arquivo com timestamp
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        arquivo_relatorio = os.path.join(pasta_auditoria, f"emails_extraidos_{timestamp}.txt")
-
-        # Contar estatísticas
-        total_clientes = len(dados_processados)
-        clientes_com_email = sum(1 for d in dados_processados if d.get('emails'))
-        total_emails = sum(len(d.get('emails', [])) for d in dados_processados)
-
-        # Criar relatório
-        with open(arquivo_relatorio, "w", encoding="utf-8") as f:
-            f.write("=" * 80 + "\n")
-            f.write("RELATORIO DE EMAILS EXTRAIDOS - v2.0\n")
-            f.write("=" * 80 + "\n")
-            f.write(f"Data/Hora: {time.strftime('%d/%m/%Y %H:%M:%S')}\n")
-            f.write(f"Total de clientes processados: {total_clientes}\n")
-            f.write(f"Clientes com email: {clientes_com_email} ({clientes_com_email/total_clientes*100:.1f}%)\n" if total_clientes > 0 else "Clientes com email: 0\n")
-            f.write(f"Total de emails extraidos: {total_emails}\n")
-            f.write("=" * 80 + "\n\n")
-
-            # Agrupar por FIDC
-            dados_por_fidc = {}
-            for dado in dados_processados:
-                fidc = dado.get('fidc', 'DESCONHECIDO')
-                if fidc not in dados_por_fidc:
-                    dados_por_fidc[fidc] = []
-                dados_por_fidc[fidc].append(dado)
-
-            # Escrever dados por FIDC
-            for fidc in sorted(dados_por_fidc.keys()):
-                dados_fidc = dados_por_fidc[fidc]
-                f.write(f"\n{'=' * 80}\n")
-                f.write(f"FIDC: {fidc}\n")
-                f.write(f"{'=' * 80}\n")
-                f.write(f"Total de clientes: {len(dados_fidc)}\n\n")
-
-                for dado in dados_fidc:
-                    pagador = dado.get('pagador', 'N/A')
-                    numero_nota = dado.get('numero_nota', 'N/A')
-                    emails = dado.get('emails', [])
-
-                    f.write(f"Cliente: {pagador}\n")
-                    f.write(f"NF: {numero_nota}\n")
-
-                    if emails:
-                        f.write(f"Emails ({len(emails)}):\n")
-                        for email in emails:
-                            f.write(f"  - {email}\n")
-                    else:
-                        f.write("Emails: Nenhum email encontrado\n")
-
-                    f.write("-" * 80 + "\n")
-
-        print(f"\n[RELATORIO] Emails salvos em: {arquivo_relatorio}")
-        return True
-
-    except Exception as e:
-        print(f"\n[ERRO] Falha ao gerar relatorio de emails: {str(e)}")
-        return False
 
 # ======== MAIN ======== #
 def processar_boletos():
@@ -1235,9 +916,6 @@ def processar_boletos():
     notas_encontradas_xml = 0
     notas_fallback_boleto = 0
 
-    # Lista para coletar dados processados (para relatório de emails)
-    dados_processados = []
-
     # Processar cada arquivo
     inicio_total = time.time()
 
@@ -1249,61 +927,86 @@ def processar_boletos():
             # Extrair texto do PDF
             texto = extrair_texto_pdf(origem)
 
-            # USAR EXTRATORES V2.0 COM XML
-            resultado = processar_boleto_v2(texto, mapa_xmls)
-
-            # Verificar se processou com sucesso
-            if resultado['status'] != 'ok':
-                print(f"  [ERRO] {resultado['erro_msg']}")
-                registrar_erro(arquivo, resultado['erro_msg'])
-                erros += 1
-                print()
-                continue
-
-            # Extrair dados do resultado
-            pagador = resultado['pagador']
-            venc = resultado['vencimento']
-            valor = resultado['valor']
-            numero_nf = resultado['numero_nota']
-            fidc = resultado['fidc']
+            # Extrair dados básicos (com IA + fallback)
+            pagador, venc, valor, metodo = extrair_dados(texto)
 
             # Contar método usado
-            metodos_usados["REGEX"] += 1
-            notas_encontradas_xml += 1
+            if "IA" in metodo:
+                metodos_usados["IA"] += 1
+            else:
+                metodos_usados["REGEX"] += 1
 
-            # Log dos dados extraídos
-            print(f"  [FIDC] {fidc}")
-            print(f"  [PAGADOR] {pagador[:50]}...")
-            print(f"  [VENCIMENTO] {venc}")
-            print(f"  [VALOR] {valor} ({resultado['origem_valor']})")
-            print(f"  [NOTA FISCAL] NF {numero_nf}")
+            # Extrair CNPJ do boleto para match com XML
+            cnpj_boleto = extrair_cnpj_do_boleto(texto)
+            if cnpj_boleto:
+                print(f"  [CNPJ] {cnpj_boleto[:2]}.{cnpj_boleto[2:5]}.{cnpj_boleto[5:8]}/{cnpj_boleto[8:12]}-{cnpj_boleto[12:]}")
 
-            # Limpar e formatar pagador para filename
-            from unidecode import unidecode
-            pagador_limpo = unidecode(pagador)
-            pagador_limpo = re.sub(r'[\\/*?:"<>|]', '-', pagador_limpo)
-            pagador_limpo = re.sub(r'\s+', ' ', pagador_limpo).strip()
-            if len(pagador_limpo) > 60:
-                pagador_limpo = pagador_limpo[:60]
+            # Obter número da nota (XML prioritário, fallback para boleto)
+            numero_nf, dados_xml, origem_nota, duplicata_matched = obter_numero_nota(cnpj_boleto, valor, pagador, venc, texto, mapa_xmls)
 
-            # Gerar nome do arquivo com número da nota (formato v2.0)
-            novo = f"{safe_filename(pagador_limpo)} - NF {safe_filename(numero_nf)} - {safe_filename(venc)} - {safe_filename(valor)}.pdf"
+            # Se encontrou match com XML, usar dados do XML ao invés do boleto
+            if origem_nota == "XML" and dados_xml:
+                notas_encontradas_xml += 1
+
+                # Usar nome e valor do XML (mais confiável que o boleto)
+                if dados_xml.get('nome'):
+                    pagador = dados_xml['nome']
+                    print(f"  [XML-NOME] Usando nome do XML: {pagador[:50]}...")
+
+                # Escolher valor correto: duplicata (se match foi por duplicata) ou total (se match foi por total)
+                if duplicata_matched:
+                    # Match foi por DUPLICATA - usar valor da parcela
+                    valor_duplicata = duplicata_matched['valor']
+                    valor_xml_formatado = f"R$ {valor_duplicata:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                    print(f"  [XML-VALOR-DUPLICATA] Usando valor da parcela: {valor_xml_formatado}")
+
+                    # Verificar se o OCR extraiu valor diferente
+                    valor_boleto_cents = valor_to_cents(valor)
+                    valor_dup_cents = int(valor_duplicata * 100)
+
+                    if valor_boleto_cents != valor_dup_cents:
+                        print(f"  [CORRECAO] OCR extraiu valor errado! Corrigido: {valor} -> {valor_xml_formatado}")
+
+                    valor = valor_xml_formatado
+
+                elif dados_xml.get('valor_total') and dados_xml['valor_total'] > 0:
+                    # Match foi por VALOR TOTAL
+                    valor_xml_decimal = dados_xml['valor_total']
+                    valor_xml_formatado = f"R$ {valor_xml_decimal:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+
+                    # Detectar se há diferença com o valor do boleto (juros/multa)
+                    valor_boleto_cents = valor_to_cents(valor)
+                    valor_xml_cents = int(valor_xml_decimal * 100)
+
+                    if valor_boleto_cents != valor_xml_cents:
+                        # Calcular diferença (juros/multa)
+                        diferenca_cents = valor_boleto_cents - valor_xml_cents
+                        diferenca_reais = diferenca_cents / 100.0
+
+                        if diferenca_reais > 0:
+                            print(f"  [ALERTA] Detectado juros/multa de R$ {diferenca_reais:.2f} no boleto!")
+                            print(f"  [INFO] Valor NF: {valor_xml_formatado} | Valor Boleto: {valor}")
+                        elif diferenca_reais < 0:
+                            print(f"  [ALERTA] Valor do boleto MENOR que nota fiscal (R$ {abs(diferenca_reais):.2f})")
+                            print(f"  [INFO] Valor NF: {valor_xml_formatado} | Valor Boleto: {valor}")
+
+                    # SEMPRE usar valor original da nota fiscal (sem juros)
+                    valor = valor_xml_formatado
+                    print(f"  [XML-VALOR-TOTAL] Usando valor total da NF: {valor}")
+
+            elif origem_nota == "BOLETO":
+                notas_fallback_boleto += 1
+
+            # Gerar nome do arquivo com número da nota
+            novo = f"{safe_filename(pagador)} - {safe_filename(numero_nf)} - {safe_filename(venc)} - {safe_filename(valor)}.pdf"
             destino = os.path.join(PASTA_DESTINO, novo)
 
             # Mover arquivo
             shutil.move(origem, destino)
 
             # Log de sucesso
-            print(f"  [OK] Extrator v2.0 -> {novo}")
+            print(f"  [OK] [{metodo}] -> {novo}")
             sucesso += 1
-
-            # Coletar dados para relatório de emails
-            dados_processados.append({
-                'pagador': pagador,
-                'numero_nota': numero_nf,
-                'emails': resultado.get('emails', []),
-                'fidc': fidc
-            })
 
         except Exception as e:
             # Log de erro
@@ -1329,11 +1032,6 @@ def processar_boletos():
     print(f"  - Fallback boleto: {notas_fallback_boleto}")
     print(f"\nTempo total:        {tempo_total:.1f}s")
     print(f"Tempo medio/boleto: {tempo_total/total:.1f}s" if total > 0 else "")
-
-    # Gerar relatório de emails
-    if dados_processados:
-        gerar_relatorio_emails(dados_processados, PASTA_AUDITORIA)
-
     print("\n" + "=" * 70)
 
 if __name__ == "__main__":

@@ -97,3 +97,44 @@ config_local.py
 *.jpg
 *.png
 !assinatura.jpg
+
+# Executáveis
+*.exe
+
+# Planilhas com dados reais
+Envio boletos - alterar dados.xlsx
+
+# Pastas operacionais
+BoletosEntrada/
+BoletosEntrada_Backup/
+BoletosRenomeados/
+BoletosEnviados/
+Logs/
+
+# Arquivos de sessão Claude
+.claude/sessions/
+.claude/settings.local.json
+
+# Arquivos temporários de teste
+resultado_teste.txt
+temp_unicode_lines.txt
+auditoria_*.json
+relatorio_*.txt
+erros_criticos_*.log
+notas do dia*.txt
+notas sobre os erros*.txt
+
+# Atalhos Windows
+*.lnk
+
+# Arquivos de debug avulsos
+debug_*.py
+test_*.py
+teste_*.py
+testar_*.py
+
+# Pastas de backup
+_backups/
+
+# HTML gerado
+*.html

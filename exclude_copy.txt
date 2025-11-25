@@ -1,0 +1,13 @@
+venv\
+.git\
+__pycache__\
+.vscode\
+.idea\
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache\
+nul

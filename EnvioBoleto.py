@@ -42,11 +42,8 @@ from auditoria import (
     gerar_log_erros_criticos
 )
 
-# Importar módulo de extratores isolados (v2.0 - Integração com renaming)
-from extractors import ExtractorFactory
-
-# Importar configuração centralizada (versão servidor com caminhos dinâmicos)
-from config_server import (
+# Importar configuração centralizada
+from config import (
     PASTA_RENOMEADOS as PASTA_BOLETOS,  # Usar pasta de boletos renomeados para envio
     PASTA_NOTAS,
     PASTA_AUDITORIA,
@@ -195,10 +192,10 @@ def extrair_texto_pdf(caminho_pdf: str) -> str | None:
 
 def extrair_cnpj_do_pdf(caminho_pdf: str) -> str | None:
     """
-    Extrai CPF ou CNPJ do pagador do boleto PDF
+    Extrai CNPJ do pagador do boleto PDF
     Usa IA primeiro, fallback para regex se falhar
 
-    Retorna: CPF (11 dígitos) ou CNPJ (14 dígitos), apenas números
+    Retorna: "12345678000190" (14 dígitos) ou None
     """
     if not PDF_DISPONIVEL:
         return None
@@ -211,71 +208,42 @@ def extrair_cnpj_do_pdf(caminho_pdf: str) -> str | None:
 
         # TENTATIVA 1: Usar IA (se disponível)
         if IA_DISPONIVEL and USAR_IA:
-            prompt = """Extraia o CPF ou CNPJ do PAGADOR deste boleto.
-CPF tem 11 dígitos (XXX.XXX.XXX-XX)
-CNPJ tem 14 dígitos (XX.XXX.XXX/XXXX-XX)
+            prompt = """Extraia o CNPJ do PAGADOR deste boleto.
+O CNPJ tem 14 dígitos no formato XX.XXX.XXX/XXXX-XX.
 
 Procure por:
 - Seção "Pagador" ou "Sacado"
-- CPF/CNPJ logo após o nome da pessoa/empresa
+- CNPJ logo após o nome da empresa
 
-Retorne APENAS os dígitos sem pontuação (exemplo: 12345678000190 ou 12345678901).
+Retorne APENAS os 14 dígitos sem pontuação (exemplo: 12345678000190).
 Se não encontrar, retorne "NAO_ENCONTRADO".
 
 Texto do PDF:
 {text}
 
-Resposta (apenas números):"""
+Resposta (apenas 14 números):"""
 
             resultado_ia = extrair_com_ia(texto, prompt)
             if resultado_ia:
-                doc_limpo = normalizar_cnpj(resultado_ia)
-                if len(doc_limpo) == 11 or len(doc_limpo) == 14:
-                    return doc_limpo
+                cnpj_limpo = normalizar_cnpj(resultado_ia)
+                if len(cnpj_limpo) == 14:
+                    return cnpj_limpo
 
-        # TENTATIVA 2: Fallback Regex (método melhorado - suporta 4 FIDCs + CPF)
+        # TENTATIVA 2: Fallback Regex (método melhorado - suporta 4 FIDCs)
         # Suporta NOVAX, SQUID, CAPITAL RS e CREDVALE
 
-        # TENTATIVA 2.1A: Padrão específico NOVAX - CNPJ
+        # TENTATIVA 2.1: Padrão específico NOVAX (mais confiável)
         # "Pagador: NOME CNPJ/ CPF : XX.XXX.XXX/XXXX-XX"
-        match_novax_cnpj = re.search(
+        match_novax = re.search(
             r'Pagador:\s*([A-Z\s]+)\s+CNPJ[\/\s]*CPF\s*[:\s]*(\d{2}\.\d{3}\.\d{3}\/\d{4}\-\d{2})',
             texto,
             re.IGNORECASE
         )
 
-        if match_novax_cnpj:
-            cnpj_limpo = normalizar_cnpj(match_novax_cnpj.group(2))
+        if match_novax:
+            cnpj_limpo = normalizar_cnpj(match_novax.group(2))
             if len(cnpj_limpo) == 14:
                 return cnpj_limpo
-
-        # TENTATIVA 2.1B: Padrão específico NOVAX - CPF
-        # "Pagador: NOME CNPJ/ CPF : XXX.XXX.XXX-XX"
-        match_novax_cpf = re.search(
-            r'Pagador:\s*([A-Z\s]+)\s+CNPJ[\/\s]*CPF\s*[:\s]*(\d{3}\.\d{3}\.\d{3}\-\d{2})',
-            texto,
-            re.IGNORECASE
-        )
-
-        if match_novax_cpf:
-            cpf_limpo = normalizar_cnpj(match_novax_cpf.group(2))
-            if len(cpf_limpo) == 11:
-                return cpf_limpo
-
-        # TENTATIVA 2.1C: Padrão DANFE (CAPITAL/SQUID)
-        # DESTINATÁRIO REMETENTE
-        # NOME/RAZÃO SOCIAL                    CNPJ/CPF
-        # EMPRESA LTDA                         XX.XXX.XXX/XXXX-XX
-        match_danfe = re.search(
-            r'DESTINAT[AÁ]RIO.*?CNPJ[\/\s]*CPF.*?[\r\n]+.*?(\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2})',
-            texto,
-            re.IGNORECASE | re.DOTALL
-        )
-
-        if match_danfe:
-            doc_limpo = normalizar_cnpj(match_danfe.group(1))
-            if len(doc_limpo) == 11 or len(doc_limpo) == 14:
-                return doc_limpo
 
         # TENTATIVA 2.2: Extrair seção do Pagador (outros FIDCs)
         # Buscar na segunda metade do documento primeiro (onde está ficha de compensação)
@@ -300,33 +268,28 @@ Resposta (apenas números):"""
             secao_pagador = match_secao.group(1)
 
             # Padrões em ordem de prioridade (mais específico primeiro)
-            # Nota: Agora aceitamos CNPJ (14 dígitos) ou CPF (11 dígitos)
             padroes = [
-                # Padrão 1: "- CNPJ:" ou "- CPF:" (SQUID)
-                r'[-–]\s*(?:CNPJ|CPF)[:\s]+(\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2})',
-                # Padrão 2: ", CNPJ:" ou ", CPF:" (CAPITAL RS)
-                r',\s*(?:CNPJ|CPF)[:\s]+(\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2})',
-                # Padrão 3: "- EPP -" (CREDVALE - sem palavra CNPJ/CPF)
-                r'[-–]\s*EPP\s*[-–]\s*(\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2})',
+                # Padrão 1: "- CNPJ:" (SQUID)
+                r'[-–]\s*CNPJ[:\s]+(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})',
+                # Padrão 2: ", CNPJ:" (CAPITAL RS)
+                r',\s*CNPJ[:\s]+(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})',
+                # Padrão 3: "- EPP -" (CREDVALE - sem palavra CNPJ)
+                r'[-–]\s*EPP\s*[-–]\s*(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})',
                 # Padrão 4: "CNPJ/ CPF :" (NOVAX - fallback)
-                r'CNPJ[\/\s]*(?:CPF)?[:\s]+(\d{2,3}[\.\s]?\d{3}[\.\s]?\d{3}[\/\-\s]?\d{2,4}[\-\s]?\d{2})',
-                # Padrão 5: Primeiro CNPJ/CPF encontrado na seção (fallback final)
-                # Tenta CNPJ primeiro (14 dígitos)
-                r'(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})',
-                # Depois tenta CPF (11 dígitos)
-                r'(\d{3}[\.\s]?\d{3}[\.\s]?\d{3}[\-\s]?\d{2})'
+                r'CNPJ[\/\s]*(?:CPF)?[:\s]+(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})',
+                # Padrão 5: Primeiro CNPJ encontrado na seção (fallback final)
+                r'(\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2})'
             ]
 
             for padrao in padroes:
                 match = re.search(padrao, secao_pagador, re.IGNORECASE)
                 if match:
-                    doc_raw = match.group(1)
-                    doc_limpo = normalizar_cnpj(doc_raw)
-                    # Aceitar CPF (11 dígitos) ou CNPJ (14 dígitos)
-                    if len(doc_limpo) == 11 or len(doc_limpo) == 14:
-                        return doc_limpo
+                    cnpj_raw = match.group(1)
+                    cnpj_limpo = normalizar_cnpj(cnpj_raw)
+                    if len(cnpj_limpo) == 14:
+                        return cnpj_limpo
 
-        # TENTATIVA 3: Busca mais ampla para CNPJ (mas não CPF, para evitar falsos positivos)
+        # TENTATIVA 3: Busca mais ampla mas evitando valores monetários
         # Procura por CNPJs que NÃO estejam precedidos por R$ ou Valor
         # e que tenham o padrão /XXXX- (mais seguro que fallback total)
         match_safe = re.search(
@@ -409,99 +372,6 @@ Resposta (uma palavra):"""
     except Exception as e:
         print(f"[AVISO] Erro ao detectar FIDC de {os.path.basename(caminho_pdf)}: {e}")
         return FIDC_PADRAO
-
-def extrair_dados_com_extrator_v2(caminho_pdf: str, mapa_xmls: dict) -> dict:
-    """
-    Extrai dados do boleto usando extractors v2.0 (integrado com renaming)
-
-    Retorna:
-        {
-            'status': 'ok' | 'erro',
-            'cnpj': str,
-            'vencimento': str (formato DD-MM),
-            'data_vencimento_completa': str (formato DD/MM/YYYY),
-            'valor': str (formato R$ X.XXX,XX),
-            'valor_decimal': Decimal,
-            'numero_nota': str,
-            'fidc': str,
-            'emails': [str],
-            'pagador': str,
-            'origem_valor': str,
-            'erro_msg': str
-        }
-    """
-    try:
-        # Extrair texto do PDF
-        if not PDF_DISPONIVEL:
-            return {
-                'status': 'erro',
-                'erro_msg': 'pdfplumber não disponível'
-            }
-
-        texto = extrair_texto_pdf(caminho_pdf)
-        if not texto:
-            return {
-                'status': 'erro',
-                'erro_msg': 'Não foi possível extrair texto do PDF'
-            }
-
-        # Detectar FIDC
-        texto_upper = texto.upper()
-        fidc = None
-        for fidc_nome, config in FIDC_CONFIG.items():
-            for palavra_chave in config["palavras_chave"]:
-                if palavra_chave.upper() in texto_upper:
-                    fidc = fidc_nome
-                    break
-            if fidc:
-                break
-
-        if not fidc:
-            fidc = FIDC_PADRAO
-
-        # Usar Factory para pegar extrator
-        extractor = ExtractorFactory.get_extractor(fidc)
-
-        # Processar com XML usando extrator v2.0
-        resultado = extractor.processar_boleto_com_xml(texto, mapa_xmls)
-
-        if resultado['status'] != 'ok':
-            return resultado
-
-        # Converter vencimento DD-MM para DD/MM/YYYY
-        # Assumir ano atual se não tiver ano
-        venc_curto = resultado['vencimento']  # DD-MM
-        if '-' in venc_curto and len(venc_curto.split('-')) == 2:
-            dia, mes = venc_curto.split('-')
-            ano = datetime.now().year
-            # Se mês < mês atual, assumir próximo ano
-            mes_atual = datetime.now().month
-            if int(mes) < mes_atual:
-                ano += 1
-            data_venc_completa = f"{dia}/{mes}/{ano}"
-        else:
-            data_venc_completa = venc_curto
-
-        # Extrair valor decimal do formato "R$ X.XXX,XX"
-        valor_str = resultado['valor']
-        valor_limpo = valor_str.replace('R$', '').replace('.', '').replace(',', '.').strip()
-        try:
-            valor_decimal = Decimal(valor_limpo)
-        except:
-            valor_decimal = Decimal(0)
-
-        # Adicionar dados ao resultado
-        resultado['fidc'] = fidc
-        resultado['data_vencimento_completa'] = data_venc_completa
-        resultado['valor_decimal'] = valor_decimal
-
-        return resultado
-
-    except Exception as e:
-        return {
-            'status': 'erro',
-            'erro_msg': f'Erro ao processar com extrator: {str(e)}'
-        }
 
 def extrair_data_vencimento_do_pdf(caminho_pdf: str) -> str | None:
     """
@@ -1027,34 +897,24 @@ def validar_boleto_com_xml(numero_nota, pagador_norm, valor_cents, cnpj_boleto, 
     boleto_auditoria.validacoes['numero_nota_match'] = True
 
     # ===== CAMADA 2: Validar CNPJ =====
-    print(f"   [VALIDACAO] Camada 2/5: Validando CPF/CNPJ...")
+    print(f"   [VALIDACAO] Camada 2/5: Validando CNPJ...")
 
-    cnpj_xml = dados_xml.get('cpf_cnpj', '')  # Pode ser CPF (11 dig) ou CNPJ (14 dig)
+    cnpj_xml = dados_xml.get('cnpj', '')
 
     if VALIDACAO_CNPJ_OBRIGATORIA and cnpj_boleto and cnpj_xml:
         if cnpj_boleto == cnpj_xml:
-            # Formatar CPF ou CNPJ corretamente
-            if len(cnpj_boleto) == 11:
-                doc_formatado = f"{cnpj_boleto[:3]}.{cnpj_boleto[3:6]}.{cnpj_boleto[6:9]}-{cnpj_boleto[9:]}"
-                tipo_doc = "CPF"
-            elif len(cnpj_boleto) == 14:
-                doc_formatado = f"{cnpj_boleto[:2]}.{cnpj_boleto[2:5]}.{cnpj_boleto[5:8]}/{cnpj_boleto[8:12]}-{cnpj_boleto[12:]}"
-                tipo_doc = "CNPJ"
-            else:
-                doc_formatado = cnpj_boleto
-                tipo_doc = "DOC"
-            print(f"   [OK] {tipo_doc} match: {doc_formatado}")
-            boleto_auditoria.adicionar_detalhe("CAMADA 2 - CPF/CNPJ", True, f"Match perfeito: {cnpj_boleto}")
+            print(f"   [OK] CNPJ match: {cnpj_boleto[:2]}.{cnpj_boleto[2:5]}.{cnpj_boleto[5:8]}/{cnpj_boleto[8:12]}-{cnpj_boleto[12:]}")
+            boleto_auditoria.adicionar_detalhe("CAMADA 2 - CNPJ", True, f"Match perfeito: {cnpj_boleto}")
             boleto_auditoria.validacoes['cnpj_match'] = True
         else:
-            msg = f"CPF/CNPJ divergente! Boleto: {cnpj_boleto}, XML: {cnpj_xml}"
+            msg = f"CNPJ divergente! Boleto: {cnpj_boleto}, XML: {cnpj_xml}"
             print(f"   [X] FALHA: {msg}")
-            boleto_auditoria.adicionar_detalhe("CAMADA 2 - CPF/CNPJ", False, msg)
+            boleto_auditoria.adicionar_detalhe("CAMADA 2 - CNPJ", False, msg)
             boleto_auditoria.validacoes['cnpj_match'] = False
             return None, "REJEITADO", msg
     else:
-        print(f"   [AVISO] CPF/CNPJ nao disponivel para validacao (boleto: {cnpj_boleto or 'N/A'}, XML: {cnpj_xml or 'N/A'})")
-        boleto_auditoria.adicionar_detalhe("CAMADA 2 - CPF/CNPJ", None, "CPF/CNPJ nao disponivel para validacao")
+        print(f"   [AVISO] CNPJ nao disponivel para validacao (boleto: {cnpj_boleto or 'N/A'}, XML: {cnpj_xml or 'N/A'})")
+        boleto_auditoria.adicionar_detalhe("CAMADA 2 - CNPJ", None, "CNPJ nao disponivel para validacao")
         boleto_auditoria.validacoes['cnpj_match'] = None
 
     # ===== CAMADA 3: Validar Nome =====
@@ -1137,7 +997,7 @@ def validar_boleto_com_xml(numero_nota, pagador_norm, valor_cents, cnpj_boleto, 
     boleto_auditoria.dados_xml = {
         'numero_nota': dados_xml.get('numero_nota'),
         'nome': nome_xml,
-        'cpf_cnpj': cnpj_xml,  # CPF (11 dig) ou CNPJ (14 dig)
+        'cnpj': cnpj_xml,
         'valor_total': float(valor_xml) if valor_xml else 0,
         'emails': emails,
         'emails_invalidos': emails_invalidos
@@ -1332,49 +1192,31 @@ def executar():
             numero_nota = digitos[-6:]
             print(f"   [NOTA] Numero da nota extraido (fallback): {numero_nota}")
 
-        # ==== EXTRAIR DADOS COM EXTRATOR V2.0 (INTEGRAÇÃO RENAMING) ====
-        print(f"   [PDF] Extraindo dados do boleto com extrator v2.0...")
-        resultado_extrator = extrair_dados_com_extrator_v2(caminho, mapa_xmls)
-
-        if resultado_extrator['status'] != 'ok':
-            msg = f"Erro no extrator v2.0: {resultado_extrator.get('erro_msg', 'Erro desconhecido')}"
-            print(f"   [X] ERRO: {msg}")
-            boleto_aud.rejeitar(msg)
-            auditoria.adicionar_boleto(boleto_aud)
-            auditoria.adicionar_erro_critico(msg, arquivo)
-            continue
-
-        # Extrair dados do resultado
-        cnpj = resultado_extrator.get('cnpj')
-        fidc_tipo = resultado_extrator.get('fidc')
-        data_vencimento = resultado_extrator.get('data_vencimento_completa')
-        valor_boleto = resultado_extrator.get('valor_decimal')  # Valor já correto (parcela)
-
-        # Para o corpo do email, usar versão curta da data (DD/MM)
-        vencimento_email = resultado_extrator.get('vencimento', 'A definir')  # DD-MM
-        if vencimento_email and vencimento_email != 'A definir' and '-' in vencimento_email:
-            # Converter DD-MM para DD/MM
-            dia, mes = vencimento_email.split('-')
-            vencimento_email = f"{dia}/{mes}"
-
-        # Log dos dados extraídos
+        # ==== EXTRAIR CNPJ DO PDF (PAGADOR DO BOLETO) ====
+        print(f"   [PDF] Extraindo CNPJ do boleto...")
+        cnpj = extrair_cnpj_do_pdf(caminho)
         if cnpj:
-            if len(cnpj) == 14:
-                print(f"   [OK] CNPJ extraido: {cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/{cnpj[8:12]}-{cnpj[12:]}")
-            elif len(cnpj) == 11:
-                print(f"   [OK] CPF extraido: {cnpj[:3]}.{cnpj[3:6]}.{cnpj[6:9]}-{cnpj[9:]}")
+            print(f"   [OK] CNPJ extraido: {cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/{cnpj[8:12]}-{cnpj[12:]}")
         else:
-            print(f"   [AVISO] CNPJ/CPF nao encontrado")
+            print(f"   [AVISO] CNPJ nao encontrado no PDF")
 
-        print(f"   [OK] FIDC detectado: {fidc_tipo} ({FIDC_CONFIG[fidc_tipo]['nome_completo']})")
-        print(f"   [OK] Data de vencimento: {data_vencimento}")
-        print(f"   [OK] Valor: {resultado_extrator.get('valor')} ({resultado_extrator.get('origem_valor')})")
-        print(f"   [OK] Para email: R$ {valor_boleto} - Venc: {vencimento_email}")
-
-        # Armazenar dados na auditoria
         boleto_aud.dados_boleto['cnpj'] = cnpj
         boleto_aud.dados_boleto['numero_nota'] = numero_nota
+
+        # ==== DETECTAR FIDC DO BOLETO ====
+        print(f"   [FIDC] Detectando FIDC do boleto...")
+        fidc_tipo = detectar_fidc_do_pdf(caminho)
+        print(f"   [OK] FIDC detectado: {fidc_tipo} ({FIDC_CONFIG[fidc_tipo]['nome_completo']})")
         boleto_aud.dados_boleto['fidc'] = fidc_tipo
+
+        # ==== EXTRAIR DATA DE VENCIMENTO DO BOLETO ====
+        print(f"   [VENC] Extraindo data de vencimento do boleto...")
+        data_vencimento = extrair_data_vencimento_do_pdf(caminho)
+        if data_vencimento:
+            print(f"   [OK] Data de vencimento: {data_vencimento}")
+        else:
+            print(f"   [AVISO] Data de vencimento nao encontrada, usando 'A definir'")
+            data_vencimento = "A definir"
         boleto_aud.dados_boleto['data_vencimento'] = data_vencimento
 
         # ==== VALIDACAO EM 5 CAMADAS ====
@@ -1399,14 +1241,36 @@ def executar():
         email_to = '; '.join(dados_xml.get('emails', []))
         nome_cliente = dados_xml.get('nome', 'Cliente Desconhecido')
 
-        # Usar valor do extractor (já está correto - parcela ou total conforme o caso)
-        valor_cents = int(valor_boleto * 100)  # Converter Decimal para centavos
+        # Buscar valor correto: parcela se houver duplicatas, senão valor total
+        duplicatas = dados_xml.get('duplicatas', [])
+        if duplicatas and data_vencimento and data_vencimento != "A definir":
+            # Normalizar data do boleto (DD/MM/YYYY → YYYY-MM-DD)
+            if '/' in data_vencimento:  # Formato DD/MM/YYYY
+                dia, mes, ano = data_vencimento.split('/')
+                venc_normalizado = f"{ano}-{mes}-{dia}"
+            else:
+                venc_normalizado = data_vencimento
+
+            # Buscar duplicata com vencimento correspondente
+            valor_parcela = None
+            for dup in duplicatas:
+                if dup.get('vencimento') == venc_normalizado:
+                    valor_parcela = dup.get('valor')
+                    break
+
+            # Usar valor da parcela se encontrou, senão usar total
+            valor_final = valor_parcela if valor_parcela else dados_xml.get('valor_total', Decimal(0))
+        else:
+            # Sem duplicatas = nota sem parcelas = usar valor total
+            valor_final = dados_xml.get('valor_total', Decimal(0))
+
+        valor_cents = int(valor_final * 100)  # Converter Decimal para centavos
         nome_norm = normalize_pagador(nome_cliente)
         docs_set = {numero_nota}  # Usar numero da nota como documento
 
         print(f"   [EMAIL] Email destino: {email_to}")
         print(f"   [CLIENTE] {nome_cliente}")
-        print(f"   [VALOR] R$ {valor_boleto}")
+        print(f"   [VALOR] R$ {valor_final}")
         print(f"   [DOC] Documento (nota): {numero_nota}")
 
         # Agrupar por (email, cliente normalizado)
@@ -1425,7 +1289,7 @@ def executar():
 
         g['docs'] |= docs_set
         g['boletos'].append(caminho)
-        g['linhas'].append({'valor_brl': cents_to_brl(valor_cents), 'venc': vencimento_email})
+        g['linhas'].append({'valor_brl': cents_to_brl(valor_cents), 'venc': data_vencimento})
         g['metodos'].append('XML')  # No novo sistema, todos são via XML
         g['fidcs'].append(fidc_tipo)  # Armazenar FIDC do boleto
         if cnpj:

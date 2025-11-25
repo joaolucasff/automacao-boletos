@@ -1,0 +1,75 @@
+================================================================================
+  COMO ABRIR O SISTEMA DE BOLETOS - Jota Jota
+================================================================================
+
+🚀 PASSO A PASSO SIMPLES:
+
+1️⃣  Procure o arquivo: "Criar_Atalho.vbs"
+2️⃣  Dê DUPLO CLIQUE nele (só precisa fazer UMA VEZ)
+3️⃣  Uma mensagem vai aparecer dizendo "Atalho criado com sucesso!"
+4️⃣  Procure o novo arquivo criado: "⭐ Sistema de Boletos.lnk"
+5️⃣  PRONTO! Agora é só clicar DUAS VEZES nesse atalho sempre que quiser abrir!
+
+
+================================================================================
+  OPÇÕES ALTERNATIVAS (se o atalho não funcionar)
+================================================================================
+
+📌 OPÇÃO 1 - Usando .vbs:
+   Arquivo: "Sistema_Boletos.vbs"
+
+   ✅ Duplo clique neste arquivo
+   ✅ A interface abre DIRETO, SEM janela preta
+
+
+📌 OPÇÃO 2 - Usando .bat (com terminal visível):
+   Arquivo: "Abrir_Sistema.bat"
+
+   ✅ Duplo clique neste arquivo
+   ⚠️  Mostra janela preta que fecha sozinha
+   ✅ Útil para ver se deu algum erro
+
+
+================================================================================
+  ENTENDENDO OS ARQUIVOS
+================================================================================
+
+📄 Criar_Atalho.vbs
+   - Cria um atalho permanente na pasta
+   - Clique UMA VEZ para criar o atalho
+   - Depois use o atalho criado
+
+⭐ Sistema de Boletos.lnk (criado após usar o Criar_Atalho.vbs)
+   - Este é o atalho final!
+   - Use ESTE para abrir o sistema
+   - Pode até arrastar para a área de trabalho
+
+📄 Sistema_Boletos.vbs
+   - Abre direto sem criar atalho
+   - Use se preferir não ter atalho
+
+📄 Abrir_Sistema.bat
+   - Igual ao .vbs mas mostra terminal
+   - Útil para debug
+
+📄 Abrir_Interface.py
+   - Código Python que inicia a interface
+   - Não clique neste, é usado pelos outros
+
+
+================================================================================
+  SE NADA FUNCIONAR
+================================================================================
+
+Tente este método manual:
+
+1. Abra a pasta: C:\Users\User-OEM\Desktop\BoletosAutomação
+2. Clique com BOTÃO DIREITO em área vazia
+3. Escolha: "Abrir no Terminal" ou "Git Bash Here"
+4. Digite: .venv\Scripts\activate
+5. Digite: python Abrir_Interface.py
+6. A interface deve abrir!
+
+Se ainda não funcionar, entre em contato com o desenvolvedor.
+
+================================================================================
