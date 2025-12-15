@@ -19,7 +19,8 @@ from config_server import (
     PASTA_DESTINO,
     PASTA_NOTAS,
     FIDC_CONFIG,
-    criar_pastas_necessarias
+    criar_pastas_necessarias,
+    MODO_PREVIEW  # ADICIONADO para mensagem dinâmica
 )
 
 # Importar funções dos scripts de processamento
@@ -726,13 +727,20 @@ class InterfaceBoletos:
                     fg=CORES['texto'],
                     bg=CORES['bg_secundario']).pack(anchor='w', padx=30)
 
-        # Aviso modo preview
-        aviso_frame = tk.Frame(main_frame, bg=CORES['aviso'], relief=tk.FLAT)
+        # Aviso modo (dinâmico baseado em config)
+        if MODO_PREVIEW:
+            aviso_cor = CORES['aviso']
+            aviso_msg = "[!] MODO PREVIEW: Emails abrirao no Outlook para revisao"
+        else:
+            aviso_cor = CORES['sucesso']
+            aviso_msg = "[!] MODO PRODUCAO: Emails serao enviados automaticamente!"
+
+        aviso_frame = tk.Frame(main_frame, bg=aviso_cor, relief=tk.FLAT)
         aviso_frame.pack(fill=tk.X, pady=(0, 15), ipady=8)
-        tk.Label(aviso_frame, text="[!] MODO PREVIEW: Emails abrirao no Outlook para revisao",
+        tk.Label(aviso_frame, text=aviso_msg,
                 font=('Segoe UI', 9, 'bold'),
                 fg=CORES['bg_principal'],
-                bg=CORES['aviso']).pack()
+                bg=aviso_cor).pack()
 
         # Variável de retorno
         self.popup_result = False

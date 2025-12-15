@@ -89,7 +89,7 @@ os.makedirs(PASTA_LOGS, exist_ok=True)
 os.makedirs(PASTA_ERROS, exist_ok=True)
 os.makedirs(PASTA_ENVIADOS, exist_ok=True)
 
-MODO_PREVIEW = True   # Modo preview: abre emails no Outlook sem enviar automaticamente
+# MODO_PREVIEW removido - agora usa valor de config.py
 
 # -------------------- CONFIGURAÇÃO DE FIDCs --------------------
 # Dados de cada FIDC: nome completo, CNPJ, e emails em cópia (CC)

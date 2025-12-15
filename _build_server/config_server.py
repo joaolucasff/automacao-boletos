@@ -110,7 +110,7 @@ FIDC_PADRAO = "CAPITAL"
 
 # ==================== CONFIGURAÇÕES GERAIS ====================
 # Modo de operação
-MODO_PREVIEW = True  # True = abre emails no Outlook sem enviar automaticamente
+MODO_PREVIEW = False  # False = emails são enviados automaticamente (PRODUÇÃO)
 
 # Sistema de dados (v7.0 - 100% XML Based)
 USAR_PLANILHA = False  # Sistema agora usa XMLs das notas fiscais
